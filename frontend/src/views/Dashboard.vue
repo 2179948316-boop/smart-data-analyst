@@ -144,7 +144,7 @@ const getTime = (key) => modules.value[key]?.computed_at || null
 
 const overview = computed(() => {
   const d = getData('overview')
-  if (!d?.rows?.length) return null
+  if (!d?.columns?.length || !d?.rows?.length) return null
   const cols = d.columns
   const row = d.rows[0]
   return Object.fromEntries(cols.map((c, i) => [c, row[i]]))
@@ -212,7 +212,7 @@ const renderAllCharts = () => {
   if (topProducts.value && topProductsChart.value) {
     charts.push(renderBarChart(
       topProductsChart.value,
-      topProducts.value.data,
+      topProducts.value,
       '商品名称', '总销量',
       { rotate: 30 }
     ))
@@ -221,7 +221,7 @@ const renderAllCharts = () => {
   if (categorySales.value && categorySalesChart.value) {
     charts.push(renderPieChart(
       categorySalesChart.value,
-      categorySales.value.data,
+      categorySales.value,
       '类目名称', '销售总额'
     ))
   }
@@ -229,14 +229,14 @@ const renderAllCharts = () => {
   if (dailyTrend.value && dailyTrendChart.value) {
     charts.push(renderDualLineChart(
       dailyTrendChart.value,
-      dailyTrend.value.data
+      dailyTrend.value
     ))
   }
 
   if (paymentDist.value && paymentDistChart.value) {
     charts.push(renderPieChart(
       paymentDistChart.value,
-      paymentDist.value.data,
+      paymentDist.value,
       '支付方式', '订单数量'
     ))
   }
@@ -244,7 +244,7 @@ const renderAllCharts = () => {
   if (cityRanking.value && cityRankingChart.value) {
     charts.push(renderBarChart(
       cityRankingChart.value,
-      cityRanking.value.data,
+      cityRanking.value,
       '城市', '客户数量',
       { horizontal: true }
     ))
@@ -253,13 +253,14 @@ const renderAllCharts = () => {
   if (memberAnalysis.value && memberAnalysisChart.value) {
     charts.push(renderBarChart(
       memberAnalysisChart.value,
-      memberAnalysis.value.data,
+      memberAnalysis.value,
       '会员等级', '平均订单金额'
     ))
   }
 }
 
 function renderBarChart(el, data, xField, yField, opts = {}) {
+  if (!data?.columns?.length || !data?.rows?.length) return null
   const cols = data.columns
   const xIdx = cols.indexOf(xField)
   const yIdx = cols.indexOf(yField)
@@ -296,6 +297,7 @@ function renderBarChart(el, data, xField, yField, opts = {}) {
 }
 
 function renderPieChart(el, data, nameField, valueField) {
+  if (!data?.columns?.length || !data?.rows?.length) return null
   const cols = data.columns
   const nameIdx = cols.indexOf(nameField)
   const valueIdx = cols.indexOf(valueField)
@@ -322,6 +324,7 @@ function renderPieChart(el, data, nameField, valueField) {
 }
 
 function renderDualLineChart(el, data) {
+  if (!data?.columns?.length || !data?.rows?.length) return null
   const cols = data.columns
   const dateIdx = cols.indexOf('日期')
   const orderIdx = cols.indexOf('订单数')
