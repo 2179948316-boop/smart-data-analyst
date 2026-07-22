@@ -8,11 +8,12 @@
 |----------|------------------------------------------------|
 | 后端     | FastAPI + LangChain + LangGraph + SQLAlchemy 2.0 |
 | 前端     | Vue 3 + Element Plus + ECharts 5                |
-| LLM     | DeepSeek API (OpenAI 兼容，可切换其他云端 API)    |
+| LLM     | OpenAI 兼容协议（DeepSeek / MiniMax / 通义千问 / GLM / OpenAI 等，修改 .env 即可切换） |
 | 数据库   | MySQL 8.0 (业务库 + 应用库)                      |
 | 缓存    | Redis (查询结果缓存 + 看板预计算，静默降级)        |
 | 向量检索 | ChromaDB + jieba TF-IDF (Few-shot 示例匹配)      |
 | 定时任务 | APScheduler (看板数据预计算)                      |
+| 部署    | Docker Compose (MySQL + Redis + Backend + Nginx)  |
 
 ## 核心架构
 
@@ -21,7 +22,7 @@
     ↓
 Few-shot 动态示例检索 (ChromaDB + jieba TF-IDF)
     ↓ 注入 top-3 相似示例到 Prompt
-LangGraph ReAct Agent (DeepSeek)
+LangGraph ReAct Agent (LLM)
     ↓ Tool Calls
 ┌─────────────┬──────────────┬──────────────┐
 │ list_tables │ get_schema   │ execute_query│  ← 自定义 LangChain Tools
@@ -42,6 +43,18 @@ LangGraph ReAct Agent (DeepSeek)
 
 ```
 smart-data-analyst/
+├── start-all.bat              # 一键启动前后端
+├── start-backend.bat          # 启动后端
+├── start-frontend.bat         # 启动前端
+├── stop-all.bat               # 一键停止所有服务
+├── init-data.bat              # 首次灌入示例数据
+├── .env.example               # 环境变量模板
+├── docker-compose.yml         # Docker 编排 (4 容器)
+├── docker/
+│   └── mysql-init/            # MySQL 初始化脚本
+├── docs/
+│   ├── resume-summary.md      # 简历项目描述
+│   └── interview-guide.md     # 面试讲解手册
 ├── backend/
 │   ├── app/
 │   │   ├── main.py              # FastAPI 入口 + APScheduler 启动
@@ -96,19 +109,41 @@ smart-data-analyst/
 
 ### 环境变量
 
-```bash
-# 必须设置
-set DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
+复制 `.env.example` 为 `.env` 并填写配置：
 
-# 可选（有默认值）
-set BIZ_DB_HOST=localhost
-set BIZ_DB_PORT=3306
-set BIZ_DB_USER=root
-set BIZ_DB_PASSWORD=123456
-set BIZ_DB_NAME=ecommerce_demo
-set APP_DB_NAME=smart_analyst
-set REDIS_HOST=localhost
-set REDIS_PORT=6379
+```bash
+cp .env.example .env
+```
+
+`.env` 文件（不会被 git 跟踪）：
+
+```bash
+# ── LLM（三选一，支持任意 OpenAI 兼容接口）──
+
+# DeepSeek
+DEEPSEEK_API_KEY=sk-your-api-key
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+LLM_MODEL=deepseek-chat
+
+# MiniMax
+# DEEPSEEK_API_KEY=sk-your-minimax-key
+# DEEPSEEK_BASE_URL=https://api.minimax.chat/v1
+# LLM_MODEL=MiniMax-Text-01
+
+# 通义千问
+# DEEPSEEK_API_KEY=sk-your-dashscope-key
+# DEEPSEEK_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+# LLM_MODEL=qwen-plus
+
+# ── 数据库（有默认值，一般不用改）──
+BIZ_DB_HOST=localhost
+BIZ_DB_PORT=3306
+BIZ_DB_USER=root
+BIZ_DB_PASSWORD=123456
+BIZ_DB_NAME=ecommerce_demo
+APP_DB_NAME=smart_analyst
+REDIS_HOST=localhost
+REDIS_PORT=6379
 ```
 
 ### 后端 Python 依赖
@@ -162,7 +197,31 @@ npm install
 
 ## 快速启动
 
-### 1. 生成示例数据
+### 方式一：一键启动（推荐）
+
+```
+# 1. 首次运行：生成示例数据
+双击 init-data.bat
+
+# 2. 一键启动前后端
+双击 start-all.bat
+
+# 3. 访问 http://localhost:5173（Vite 可能自动分配到 5174 等端口）
+```
+
+可用脚本：
+
+| 脚本 | 说明 |
+|------|------|
+| `start-all.bat` | 一键启动前后端（各自独立窗口） |
+| `start-backend.bat` | 单独启动后端（端口 8001） |
+| `start-frontend.bat` | 单独启动前端（端口 5173+） |
+| `stop-all.bat` | 一键停止所有服务 |
+| `init-data.bat` | 首次灌入电商示例数据 |
+
+### 方式二：手动启动
+
+#### 1. 生成示例数据
 
 ```bash
 cd backend
@@ -177,14 +236,14 @@ python -X utf8 data/init_data.py
 - order_items (4,795 条明细)
 - reviews (800 条评价)
 
-### 2. 启动后端
+#### 2. 启动后端
 
 ```bash
 cd backend
 python -X utf8 -m uvicorn app.main:app --host 127.0.0.1 --port 8001 --reload
 ```
 
-### 3. 启动前端
+#### 3. 启动前端
 
 ```bash
 cd frontend
@@ -192,9 +251,9 @@ npm install
 npm run dev
 ```
 
-### 4. 访问
+#### 4. 访问
 
-打开 http://localhost:5173
+打开 http://localhost:5173（如端口被占用，Vite 会自动分配到 5174 等端口，注意终端输出提示）
 
 ## API 端点
 
@@ -306,3 +365,24 @@ npm run dev
 cd backend
 python -m pytest tests/ -v
 ```
+
+## Docker 部署
+
+一键启动全部服务（无需本地安装 MySQL / Redis / Node.js）：
+
+```bash
+docker-compose up --build -d
+```
+
+| 容器 | 镜像 | 端口 | 说明 |
+|------|------|------|------|
+| mysql | mysql:8.0 | 3307:3306 | 双库自动创建（docker/mysql-init/） |
+| redis | redis:7-alpine | 6380:6379 | 查询缓存 + 看板预计算 |
+| backend | python:3.12-slim | 8001:8001 | FastAPI + uvicorn |
+| frontend | nginx:alpine | 80:80 | Vue SPA + 反向代理 |
+
+访问 http://localhost 即可使用（Nginx 代理 `/api/` 到后端）。
+
+## License
+
+[MIT](LICENSE)
