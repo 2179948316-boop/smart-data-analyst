@@ -9,9 +9,11 @@
 | 后端     | FastAPI + LangChain + LangGraph + SQLAlchemy 2.0 |
 | 前端     | Vue 3 + Element Plus + ECharts 5                |
 | LLM     | OpenAI 兼容协议（DeepSeek / MiniMax / 通义千问 / GLM / OpenAI 等，修改 .env 即可切换） |
-| 数据库   | MySQL 8.0 (业务库 + 应用库)                      |
+| 数据库   | MySQL 8.0 (业务库 + 应用库，多租户隔离)           |
+| 认证    | JWT (python-jose + bcrypt)，角色权限控制          |
 | 缓存    | Redis (查询结果缓存 + 看板预计算，静默降级)        |
 | 向量检索 | ChromaDB + jieba TF-IDF (Few-shot 示例匹配)      |
+| 文件导入 | pandas + openpyxl (Excel/CSV → MySQL 自动建表)   |
 | 定时任务 | APScheduler (看板数据预计算)                      |
 | 部署    | Docker Compose (MySQL + Redis + Backend + Nginx)  |
 
@@ -58,23 +60,26 @@ smart-data-analyst/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py              # FastAPI 入口 + APScheduler 启动
-│   │   ├── models.py            # ORM 模型 (对话/消息/查询日志)
+│   │   ├── models.py            # ORM 模型 (用户/工作空间/对话/消息/查询日志)
 │   │   ├── core/
 │   │   │   ├── config.py        # 配置 (环境变量)
-│   │   │   ├── database.py      # 双库连接 (业务库 + 应用库)
+│   │   │   ├── database.py      # 双库连接 + workspace contextvars 隔离 + 自动迁移
+│   │   │   ├── auth.py          # JWT 认证 + bcrypt 密码 + FastAPI 依赖注入
 │   │   │   ├── llm_provider.py  # LLM 抽象层
 │   │   │   └── sql_validator.py # SQL 安全校验
 │   │   ├── agent/
-│   │   │   ├── tools.py         # 自定义 LangChain Tools
+│   │   │   ├── tools.py         # 自定义 LangChain Tools (workspace 感知)
 │   │   │   ├── sql_agent.py     # Agent 编排 (LangGraph ReAct + Few-shot)
 │   │   │   └── few_shot.py      # Few-shot 向量检索 (ChromaDB + jieba TF-IDF)
 │   │   ├── services/
 │   │   │   ├── query_service.py # 查询服务 + Redis 缓存
+│   │   │   ├── file_import.py   # Excel/CSV 文件导入 (pandas → MySQL 自动建表)
 │   │   │   └── preview_service.py # SQL 写操作预览 (UPDATE/DELETE → SELECT)
 │   │   ├── scheduler/
 │   │   │   └── tasks.py         # 定时预计算任务 (7 个指标 → Redis)
 │   │   └── api/
-│   │       └── routes.py        # REST API 路由 (含 EXPLAIN + 性能对比)
+│   │       ├── routes.py        # REST API 路由 (含 workspace 上下文注入)
+│   │       └── auth_routes.py   # 认证 + 团队管理 API (注册/登录/邀请/切换)
 │   ├── data/
 │   │   ├── init_data.py         # Faker 电商数据生成器
 │   │   └── seed_examples.py     # Few-shot 种子数据 (20 条问答对)
@@ -84,15 +89,22 @@ smart-data-analyst/
 │       └── test_tools.py        # Agent 工具测试 (26 cases, Mock DB)
 ├── frontend/
 │   └── src/
-│       ├── views/Chat.vue       # 聊天界面 (含 EXPLAIN + 性能对比)
-│       ├── views/Dashboard.vue  # 数据看板 (预计算可视化)
-│       ├── views/History.vue    # 查询历史
-│       ├── views/DataSource.vue # 数据源管理
+│       ├── App.vue              # 全局布局 + 侧边栏 + 用户信息
+│       ├── views/
+│       │   ├── Login.vue        # 登录/注册页面
+│       │   ├── Chat.vue         # 聊天界面 (含 EXPLAIN + 性能对比)
+│       │   ├── Dashboard.vue    # 数据看板 (预计算可视化)
+│       │   ├── History.vue      # 查询历史
+│       │   ├── DataSource.vue   # 数据源管理 (文件上传 + 表管理)
+│       │   └── TeamManage.vue   # 团队管理 (成员/空间/邀请/切换)
+│       ├── store/
+│       │   └── auth.js          # 认证状态管理 (JWT + sessionStorage)
 │       ├── components/
 │       │   ├── ChartRenderer.vue # ECharts 图表组件
 │       │   ├── ExplainDialog.vue # SQL 执行计划可视化弹窗
 │       │   └── PerformancePanel.vue # 查询性能对比面板
-│       └── api/index.js         # Axios API 封装
+│       ├── router/index.js      # 路由 + 导航守卫 (登录/权限校验)
+│       └── api/index.js         # Axios API + JWT 拦截器
 └── README.md
 ```
 
@@ -173,6 +185,11 @@ pip install -r requirements.txt
 | chromadb            | >=1.0   | Few-shot 向量存储              |
 | apscheduler         | >=3.11  | 定时预计算任务                  |
 | jieba               | >=0.42  | 中文分词（Few-shot TF-IDF）     |
+| pandas              | >=2.2   | 文件读取（Excel/CSV）           |
+| openpyxl            | >=3.1   | Excel 文件解析引擎              |
+| python-multipart    | >=0.0.9 | FastAPI 文件上传支持            |
+| python-jose[crypto] | >=3.3   | JWT 令牌生成与验证              |
+| bcrypt              | >=4.0   | 密码哈希                       |
 
 ### 前端 npm 依赖
 
@@ -257,19 +274,37 @@ npm run dev
 
 ## API 端点
 
+### 认证 & 团队
+
+| 方法   | 路径                          | 说明                    |
+|--------|-------------------------------|------------------------|
+| POST   | /api/auth/register            | 用户注册（自动创建空间）  |
+| POST   | /api/auth/login               | 用户登录（返回 JWT）      |
+| GET    | /api/auth/me                  | 当前用户信息            |
+| POST   | /api/auth/select-workspace    | 切换工作空间            |
+| GET    | /api/workspaces               | 我的空间列表            |
+| POST   | /api/workspaces               | 创建团队               |
+| GET    | /api/workspaces/{id}/members  | 团队成员列表            |
+| POST   | /api/workspaces/{id}/invite   | 邀请成员（管理员）       |
+
+### 数据 & 查询
+
 | 方法   | 路径                      | 说明                    |
 |--------|---------------------------|------------------------|
 | GET    | /health                   | 健康检查               |
 | POST   | /api/ask                  | 自然语言提问 (同步)     |
 | POST   | /api/ask/stream           | 自然语言提问 (SSE 流式) |
 | POST   | /api/execute-sql          | 执行 SQL 返回结构化数据 |
-| GET    | /api/conversations        | 对话列表               |
+| GET    | /api/conversations        | 对话列表（按空间过滤）  |
 | POST   | /api/conversations        | 创建对话               |
 | GET    | /api/conversations/{id}   | 对话详情 + 消息        |
 | DELETE | /api/conversations/{id}   | 删除对话               |
 | GET    | /api/history              | 查询历史 (分页)         |
 | GET    | /api/datasources          | 数据源列表             |
 | POST   | /api/datasources          | 添加数据源             |
+| POST   | /api/datasources/upload   | 上传 Excel/CSV 文件    |
+| GET    | /api/datasources/tables   | 业务表列表（workspace） |
+| DELETE | /api/datasources/tables/{name} | 删除表             |
 | GET    | /api/dashboard/stats      | 看板预计算数据（全部）  |
 | GET    | /api/dashboard/stats/{key}| 看板单模块数据          |
 | POST   | /api/sql/preview          | SQL 写操作预览         |
@@ -365,6 +400,37 @@ npm run dev
 cd backend
 python -m pytest tests/ -v
 ```
+
+### 7. JWT 认证 & 多租户工作空间
+
+用户注册时自动创建个人工作空间和对应的 MySQL 数据库（`ws_` 前缀），所有数据操作都在 workspace 隔离下进行：
+
+- **JWT 认证**：HS256 签名，7 天有效期，Bearer Token 通过 sessionStorage 持久化
+- **bcrypt 密码哈希**：直接使用 bcrypt 库（绕过 passlib 兼容性问题）
+- **角色权限控制**：`admin`（管理数据 + 邀请成员）vs `member`（只读查询）
+- **Workspace 数据隔离**：通过 `contextvars` 在请求链路中传递 workspace 数据库名，Agent 工具、文件导入、SQL 执行全部自动连接到对应空间库
+- **前端路由守卫**：`beforeEach` 校验登录状态 + adminOnly 路由权限
+- **Axios 拦截器**：请求自动附加 Bearer Token，401 响应自动跳转登录页
+- **自动 Schema 迁移**：`init_app_db()` 启动时检测已有表，用 ALTER TABLE 补上 ORM 新增列
+
+### 8. Excel/CSV 文件导入
+
+非技术用户无需准备 MySQL，直接上传 Excel 或 CSV 文件即可创建数据表供 Agent 查询：
+
+- 支持 `.xlsx`、`.xls`、`.csv`、`.tsv` 格式，自动处理 UTF-8/GBK 编码
+- pandas 读取后自动推断列类型（int→BIGINT, float→DOUBLE, object→VARCHAR(n), datetime→DATETIME）
+- 批量插入（1000 行/批），最大支持 50MB 文件 / 50 万行
+- 表名冲突时自动重命名（`_1`, `_2` ...），或选择覆盖已有表
+- 前端拖拽上传区域 + 自定义表名 + 导入结果预览
+
+### 9. 团队管理
+
+管理员创建团队空间，邀请成员共享数据，无需每人重复导入：
+
+- **创建团队**：自动生成独立 MySQL 数据库，团队成员共享数据
+- **邀请成员**：通过用户名邀请，设置角色（管理员/成员）
+- **切换空间**：一键在不同团队间切换，对话/数据/Agent 查询全部跟随
+- **成员列表**：展示用户名、角色、加入时间
 
 ## Docker 部署
 

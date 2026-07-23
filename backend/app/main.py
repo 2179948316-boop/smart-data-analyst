@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.api.routes import router
+from app.api.auth_routes import router as auth_router
 from app.core.database import init_app_db
 from app.scheduler.tasks import ALL_TASKS, run_all_tasks
 
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="智能数据分析助手",
     description="NL2SQL + Agent：用自然语言提问，AI 自动生成 SQL、执行查询、返回分析结论和可视化图表",
-    version="2.0.0",
+    version="3.0.0",
 )
 
 # CORS — allow Vue dev server (Vite may auto-increment port if default is occupied)
@@ -39,6 +40,7 @@ app.add_middleware(
 
 # Routes
 app.include_router(router)
+app.include_router(auth_router)
 
 # ── APScheduler ──
 scheduler = BackgroundScheduler()

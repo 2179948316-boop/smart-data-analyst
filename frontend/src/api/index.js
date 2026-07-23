@@ -5,15 +5,54 @@ const api = axios.create({
   timeout: 300000, // 5 min for agent
 })
 
+// ── Token Interceptor ──
+// Auto-attach JWT token to every request
+api.interceptors.request.use((config) => {
+  const token = window.__auth_token__
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
+// Auto-redirect to login on 401
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    if (err.response?.status === 401 && !window.location.pathname.includes('/login')) {
+      window.__auth_token__ = null
+      window.__auth_user__ = null
+      window.location.href = '/login'
+    }
+    return Promise.reject(err)
+  }
+)
+
+// ── Auth ──
+export const register = (data) => api.post('/auth/register', data)
+export const login = (data) => api.post('/auth/login', data)
+export const getMe = () => api.get('/auth/me')
+export const selectWorkspace = (workspaceId) =>
+  api.post('/auth/select-workspace', { workspace_id: workspaceId })
+
+// ── Workspaces ──
+export const listWorkspaces = () => api.get('/workspaces')
+export const createWorkspace = (data) => api.post('/workspaces', data)
+export const listMembers = (workspaceId) => api.get(`/workspaces/${workspaceId}/members`)
+export const inviteMember = (workspaceId, data) =>
+  api.post(`/workspaces/${workspaceId}/invite`, data)
+
 // ── Chat / Query ──
 export const askQuestion = (question, conversationId = null) =>
   api.post('/ask', { question, conversation_id: conversationId })
 
 export const askQuestionStream = (question, conversationId = null) => {
-  // Returns a fetch-based SSE stream (axios doesn't support SSE natively)
+  const token = window.__auth_token__
+  const headers = { 'Content-Type': 'application/json' }
+  if (token) headers.Authorization = `Bearer ${token}`
   return fetch('/api/ask/stream', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ question, conversation_id: conversationId }),
   })
 }
@@ -31,6 +70,18 @@ export const getHistory = (page = 1, pageSize = 20) =>
 // ── Data Sources ──
 export const listDataSources = () => api.get('/datasources')
 export const createDataSource = (data) => api.post('/datasources', data)
+export const uploadFile = (file, tableName = '', ifExists = 'rename') => {
+  const form = new FormData()
+  form.append('file', file)
+  if (tableName) form.append('table_name', tableName)
+  form.append('if_exists', ifExists)
+  return api.post('/datasources/upload', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000, // 2 min for large files
+  })
+}
+export const listTables = () => api.get('/datasources/tables')
+export const deleteTable = (tableName) => api.delete(`/datasources/tables/${tableName}`)
 
 // ── Chart / SQL Execution ──
 export const executeSql = (sql) => api.post('/execute-sql', { sql })

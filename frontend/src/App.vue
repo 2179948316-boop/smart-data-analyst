@@ -1,10 +1,30 @@
 <template>
-  <el-container class="app-container">
+  <!-- Login page: no sidebar -->
+  <router-view v-if="route.path === '/login'" />
+
+  <!-- Authenticated layout -->
+  <el-container v-else class="app-container">
     <el-aside width="240px" class="app-sidebar">
       <div class="sidebar-header">
         <el-icon :size="24"><DataAnalysis /></el-icon>
         <span class="app-title">智能数据分析</span>
       </div>
+
+      <!-- User & Workspace -->
+      <div class="user-info">
+        <div class="user-row">
+          <el-icon><User /></el-icon>
+          <span class="user-name">{{ auth.user?.display_name || auth.user?.username }}</span>
+        </div>
+        <div class="workspace-row" v-if="auth.workspace" @click="router.push('/team')" title="点击管理团队">
+          <el-icon><OfficeBuilding /></el-icon>
+          <span class="workspace-name">{{ auth.workspace.name }}</span>
+          <el-tag size="small" :type="auth.workspace.role === 'admin' ? 'warning' : 'info'" class="role-tag">
+            {{ auth.workspace.role === 'admin' ? '管理员' : '成员' }}
+          </el-tag>
+        </div>
+      </div>
+
       <el-menu
         :default-active="activeMenu"
         router
@@ -22,14 +42,22 @@
           <el-icon><Clock /></el-icon>
           <span>查询历史</span>
         </el-menu-item>
-        <el-menu-item index="/datasource">
+        <el-menu-item index="/team">
+          <el-icon><Setting /></el-icon>
+          <span>团队管理</span>
+        </el-menu-item>
+        <el-menu-item v-if="isAdmin()" index="/datasource">
           <el-icon><Coin /></el-icon>
           <span>数据源管理</span>
         </el-menu-item>
       </el-menu>
+
       <div class="sidebar-footer">
-        <el-tag type="success" size="small">NL2SQL Agent</el-tag>
-        <p class="version-text">v1.0.0</p>
+        <el-button text size="small" @click="handleLogout" class="logout-btn">
+          <el-icon><SwitchButton /></el-icon>
+          退出登录
+        </el-button>
+        <p class="version-text">v3.0.0</p>
       </div>
     </el-aside>
     <el-main class="app-main">
@@ -40,10 +68,17 @@
 
 <script setup>
 import { computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { auth, isAdmin, logout } from './store/auth'
 
 const route = useRoute()
+const router = useRouter()
 const activeMenu = computed(() => route.path)
+
+const handleLogout = () => {
+  logout()
+  router.push('/login')
+}
 </script>
 
 <style>
@@ -84,6 +119,53 @@ html, body, #app {
   color: #fff;
 }
 
+/* User info section */
+.user-info {
+  padding: 14px 20px;
+  border-bottom: 1px solid #16213e;
+}
+
+.user-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #ddd;
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+
+.user-name {
+  font-weight: 500;
+}
+
+.workspace-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #888;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 2px 4px;
+  margin: 0 -4px;
+  transition: background 0.2s;
+}
+
+.workspace-row:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.workspace-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.role-tag {
+  flex-shrink: 0;
+}
+
 .sidebar-menu {
   flex: 1;
   background: transparent;
@@ -108,15 +190,24 @@ html, body, #app {
 }
 
 .sidebar-footer {
-  padding: 16px 20px;
+  padding: 12px 20px;
   text-align: center;
   border-top: 1px solid #16213e;
 }
 
+.logout-btn {
+  color: #888 !important;
+  font-size: 13px;
+}
+
+.logout-btn:hover {
+  color: #e94560 !important;
+}
+
 .version-text {
-  color: #666;
-  font-size: 12px;
-  margin-top: 8px;
+  color: #555;
+  font-size: 11px;
+  margin-top: 6px;
 }
 
 .app-main {

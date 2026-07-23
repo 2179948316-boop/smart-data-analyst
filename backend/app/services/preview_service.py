@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import text as sa_text
 
-from app.core.database import BizSessionLocal
+from app.core.database import get_workspace_session
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +134,7 @@ class PreviewService:
     ) -> PreviewResult:
         """Execute the preview SELECT and return structured results."""
         try:
-            with BizSessionLocal() as session:
+            with get_workspace_session() as session:
                 result = session.execute(sa_text(preview_sql))
                 columns = list(result.keys())
                 rows = [list(row) for row in result.fetchall()]
@@ -174,7 +174,7 @@ class PreviewService:
         Returns: {"affected_rows": int, "success": bool, "message": str}
         """
         try:
-            with BizSessionLocal() as session:
+            with get_workspace_session() as session:
                 result = session.execute(sa_text(sql))
                 session.commit()
                 affected = result.rowcount if hasattr(result, "rowcount") else 0

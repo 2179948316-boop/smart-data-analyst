@@ -12,7 +12,7 @@ Agent's decision process transparent and debuggable — key for a resume project
 from langchain_core.tools import tool
 from sqlalchemy import text
 
-from app.core.database import BizSessionLocal
+from app.core.database import get_workspace_session
 from app.core.sql_validator import validator
 
 
@@ -20,7 +20,7 @@ from app.core.sql_validator import validator
 def list_tables() -> str:
     """列出数据库中所有可用的表名。当你不确定有哪些表时，首先调用此工具。"""
     try:
-        with BizSessionLocal() as session:
+        with get_workspace_session() as session:
             result = session.execute(
                 text("SELECT table_name FROM information_schema.tables "
                      "WHERE table_schema = DATABASE() ORDER BY table_name")
@@ -35,7 +35,7 @@ def list_tables() -> str:
 def get_table_schema(table_name: str) -> str:
     """获取指定表的列名、数据类型和注释信息。在写 SQL 之前，必须先调用此工具了解表结构。"""
     try:
-        with BizSessionLocal() as session:
+        with get_workspace_session() as session:
             result = session.execute(
                 text("SELECT column_name, data_type, column_comment, is_nullable "
                      "FROM information_schema.columns "
@@ -77,7 +77,7 @@ def execute_query(sql: str) -> str:
         # Security validation
         sql = validator.validate(sql)
 
-        with BizSessionLocal() as session:
+        with get_workspace_session() as session:
             result = session.execute(text(sql))
             columns = list(result.keys())
             rows = result.fetchall()

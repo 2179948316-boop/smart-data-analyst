@@ -4,19 +4,26 @@ import json
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.database import get_app_db, AppSessionLocal
-from app.models import Conversation, Message, QueryLog, DataSource
+from app.core.database import get_app_db, AppSessionLocal, set_workspace_db
+from app.core.auth import get_optional_user, get_current_workspace
+from app.models import User, Workspace, Conversation, Message, QueryLog, DataSource
 from app.services import query_service
 from app.services.preview_service import preview_service
 from app.scheduler.tasks import get_all_dashboard_data, get_dashboard_data
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _set_ws_context(workspace: Workspace | None):
+    """Set the workspace database context for this request."""
+    if workspace and workspace.db_name:
+        set_workspace_db(workspace.db_name)
 
 
 # ── Request/Response Models ──
@@ -69,15 +76,20 @@ def health_check():
 
 
 @router.post("/api/execute-sql")
-def execute_sql(req: ExecuteSqlRequest):
+def execute_sql(
+    req: ExecuteSqlRequest,
+    workspace: Workspace | None = Depends(get_current_workspace),
+):
     """Safely execute a SQL query and return structured data for chart rendering."""
     from sqlalchemy import text as sa_text
-    from app.core.database import BizSessionLocal
     from app.core.sql_validator import validator
+
+    _set_ws_context(workspace)
 
     try:
         sql = validator.validate(req.sql)
-        with BizSessionLocal() as session:
+        from app.core.database import get_workspace_session
+        with get_workspace_session() as session:
             result = session.execute(sa_text(sql))
             columns = list(result.keys())
             rows = [list(row) for row in result.fetchall()]
@@ -98,12 +110,23 @@ def execute_sql(req: ExecuteSqlRequest):
 # ── Chat / Query Endpoints ──
 
 @router.post("/api/ask", response_model=AskResponse)
-def ask_question(req: AskRequest, db: Session = Depends(get_app_db)):
+def ask_question(
+    req: AskRequest,
+    db: Session = Depends(get_app_db),
+    user: User | None = Depends(get_optional_user),
+    workspace: Workspace | None = Depends(get_current_workspace),
+):
     """Ask a natural language question — synchronous response."""
+    _set_ws_context(workspace)
+
     # Create or get conversation
     conv_id = req.conversation_id
     if not conv_id:
-        conv = Conversation(title=req.question[:50])
+        conv = Conversation(
+            title=req.question[:50],
+            user_id=user.id if user else None,
+            workspace_id=workspace.id if workspace else None,
+        )
         db.add(conv)
         db.flush()
         conv_id = conv.id
@@ -147,14 +170,23 @@ def ask_question(req: AskRequest, db: Session = Depends(get_app_db)):
 
 
 @router.post("/api/ask/stream")
-def ask_question_stream(req: AskRequest):
+def ask_question_stream(
+    req: AskRequest,
+    workspace: Workspace | None = Depends(get_current_workspace),
+    user: User | None = Depends(get_optional_user),
+):
     """Ask a question with SSE streaming for real-time feedback."""
+    _set_ws_context(workspace)
     conv_id = req.conversation_id
 
     # Create conversation if needed
     if not conv_id:
         with AppSessionLocal() as db:
-            conv = Conversation(title=req.question[:50])
+            conv = Conversation(
+                title=req.question[:50],
+                user_id=user.id if user else None,
+                workspace_id=workspace.id if workspace else None,
+            )
             db.add(conv)
             db.commit()
             conv_id = conv.id
@@ -201,9 +233,15 @@ def ask_question_stream(req: AskRequest):
 # ── Conversations ──
 
 @router.get("/api/conversations")
-def list_conversations(db: Session = Depends(get_app_db)):
-    """List all conversations."""
-    convs = db.query(Conversation).order_by(Conversation.updated_at.desc()).all()
+def list_conversations(
+    db: Session = Depends(get_app_db),
+    workspace: Workspace | None = Depends(get_current_workspace),
+):
+    """List conversations for the current workspace."""
+    query = db.query(Conversation)
+    if workspace:
+        query = query.filter(Conversation.workspace_id == workspace.id)
+    convs = query.order_by(Conversation.updated_at.desc()).all()
     return [
         {
             "id": c.id,
@@ -217,9 +255,18 @@ def list_conversations(db: Session = Depends(get_app_db)):
 
 
 @router.post("/api/conversations")
-def create_conversation(req: ConversationCreate, db: Session = Depends(get_app_db)):
+def create_conversation(
+    req: ConversationCreate,
+    db: Session = Depends(get_app_db),
+    user: User | None = Depends(get_optional_user),
+    workspace: Workspace | None = Depends(get_current_workspace),
+):
     """Create a new conversation."""
-    conv = Conversation(title=req.title)
+    conv = Conversation(
+        title=req.title,
+        user_id=user.id if user else None,
+        workspace_id=workspace.id if workspace else None,
+    )
     db.add(conv)
     db.commit()
     return {"id": conv.id, "title": conv.title}
@@ -375,15 +422,145 @@ def dashboard_stat_module(key: str):
     return {"success": True, "data": data}
 
 
+# ── File Upload (Excel/CSV → MySQL) ──
+
+@router.post("/api/datasources/upload")
+async def upload_file(
+    file: UploadFile = File(...),
+    table_name: str = Form(default=""),
+    if_exists: str = Form(default="rename"),
+    workspace: Workspace | None = Depends(get_current_workspace),
+):
+    """Upload an Excel or CSV file and import it as a MySQL table.
+
+    The file is read with pandas, column types are auto-detected,
+    and data is inserted into the business database.
+
+    Args:
+        file: The uploaded file (.xlsx, .xls, .csv, .tsv)
+        table_name: Custom table name (optional, defaults to filename)
+        if_exists: 'rename' to auto-rename if table exists, 'replace' to overwrite
+    """
+    from app.services.file_import import read_file, import_to_mysql, MAX_FILE_SIZE
+
+    _set_ws_context(workspace)
+
+    # Validate file extension
+    filename = file.filename or "upload"
+    lower = filename.lower()
+    if not lower.endswith((".xlsx", ".xls", ".csv", ".tsv")):
+        return {
+            "success": False,
+            "error": f"不支持的文件格式: {filename}。请上传 .xlsx、.xls、.csv 或 .tsv 文件。",
+        }
+
+    # Read file content
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE:
+        return {
+            "success": False,
+            "error": f"文件过大 ({len(content) / 1024 / 1024:.1f}MB)，最大支持 {MAX_FILE_SIZE // 1024 // 1024}MB。",
+        }
+
+    try:
+        # Parse file into DataFrame
+        df = read_file(content, filename)
+
+        if df.empty:
+            return {"success": False, "error": "文件内容为空，没有可导入的数据。"}
+
+        # Use custom table name or derive from filename
+        name = table_name.strip() if table_name.strip() else filename
+
+        # Import into MySQL
+        result = import_to_mysql(df, name, if_exists=if_exists)
+
+        return {
+            "success": True,
+            "message": f"成功导入 {result['row_count']} 行数据到表 `{result['table_name']}`",
+            "table": result,
+        }
+
+    except Exception as e:
+        logger.error(f"File import failed: {e}", exc_info=True)
+        return {"success": False, "error": f"导入失败: {str(e)}"}
+
+
+@router.get("/api/datasources/tables")
+def list_business_tables(
+    workspace: Workspace | None = Depends(get_current_workspace),
+):
+    """List all tables in the current workspace database (for Agent and UI)."""
+    from sqlalchemy import text
+    from app.core.database import get_workspace_session
+
+    _set_ws_context(workspace)
+
+    try:
+        with get_workspace_session() as session:
+            result = session.execute(
+                text(
+                    "SELECT table_name, table_rows, table_comment "
+                    "FROM information_schema.tables "
+                    "WHERE table_schema = DATABASE() "
+                    "ORDER BY table_name"
+                )
+            )
+            tables = []
+            for row in result:
+                tables.append({
+                    "name": row[0],
+                    "row_count": row[1] or 0,
+                    "comment": row[2] or "",
+                })
+            return {"success": True, "tables": tables}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.delete("/api/datasources/tables/{table_name}")
+def delete_table(
+    table_name: str,
+    workspace: Workspace | None = Depends(get_current_workspace),
+):
+    """Delete a table from the current workspace database."""
+    from sqlalchemy import text
+    from app.core.database import get_workspace_session
+    import re
+
+    _set_ws_context(workspace)
+
+    # Safety: only allow simple table names
+    if not re.match(r"^[a-zA-Z_\u4e00-\u9fff][a-zA-Z0-9_\u4e00-\u9fff]{0,63}$", table_name):
+        return {"success": False, "error": "无效的表名"}
+
+    # Don't allow deleting core demo tables
+    PROTECTED = {"categories", "products", "customers", "orders", "order_items", "reviews"}
+    if table_name.lower() in PROTECTED:
+        return {"success": False, "error": f"不允许删除核心示例表 `{table_name}`"}
+
+    try:
+        with get_workspace_session() as session:
+            session.execute(text(f"DROP TABLE IF EXISTS `{table_name}`"))
+            session.commit()
+        return {"success": True, "message": f"表 `{table_name}` 已删除"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 # ── SQL Write Preview & Confirm ──
 
 @router.post("/api/sql/preview")
-def sql_preview(req: SqlPreviewRequest):
+def sql_preview(
+    req: SqlPreviewRequest,
+    workspace: Workspace | None = Depends(get_current_workspace),
+):
     """
     Detect if a SQL is a write operation and return a preview of affected rows.
     If it's a SELECT, returns {"is_write": false}.
     If it's UPDATE/DELETE/INSERT, returns preview data for user confirmation.
     """
+    _set_ws_context(workspace)
     op_type = preview_service.detect_write(req.sql)
     if not op_type:
         return {
@@ -415,11 +592,15 @@ def sql_preview(req: SqlPreviewRequest):
 
 
 @router.post("/api/sql/confirm")
-def sql_confirm(req: SqlConfirmRequest):
+def sql_confirm(
+    req: SqlConfirmRequest,
+    workspace: Workspace | None = Depends(get_current_workspace),
+):
     """
     Execute a confirmed write operation.
     Only called after the user has reviewed the preview and confirmed.
     """
+    _set_ws_context(workspace)
     op_type = preview_service.detect_write(req.sql)
     if not op_type:
         return {"success": False, "error": "该 SQL 不是写操作，请使用 /api/execute-sql"}
@@ -431,21 +612,26 @@ def sql_confirm(req: SqlConfirmRequest):
 # ── SQL EXPLAIN (Execution Plan Visualization) ──
 
 @router.post("/api/sql/explain")
-def sql_explain(req: ExecuteSqlRequest):
+def sql_explain(
+    req: ExecuteSqlRequest,
+    workspace: Workspace | None = Depends(get_current_workspace),
+):
     """
     Run EXPLAIN on a SQL query and return the execution plan in structured format.
     Useful for understanding index usage, join strategies, and query optimization.
     """
     from sqlalchemy import text as sa_text
-    from app.core.database import BizSessionLocal
+    from app.core.database import get_workspace_session
     from app.core.sql_validator import validator
+
+    _set_ws_context(workspace)
 
     try:
         # Validate SQL first (only SELECT allowed)
         sql = validator.validate(req.sql)
         explain_sql = f"EXPLAIN {sql}"
 
-        with BizSessionLocal() as session:
+        with get_workspace_session() as session:
             result = session.execute(sa_text(explain_sql))
             columns = list(result.keys())
             rows = [list(row) for row in result.fetchall()]
